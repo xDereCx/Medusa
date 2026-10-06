@@ -150,6 +150,9 @@
                                     <config-textbox v-model="subtitles.providerLogins.legendastv.user" label="Legendastv User Name" id="legandas_username" />
                                     <config-textbox type="password" v-model="subtitles.providerLogins.legendastv.pass" label="Legendastv Password" id="legandas_password" />
 
+                                    <config-textbox v-model="subtitles.providerLogins.titulky.user" label="Titulky.com User Name" id="titulky_username" />
+                                    <config-textbox type="password" v-model="subtitles.providerLogins.titulky.pass" label="Titulky.com Password" id="titulky_password" />
+
                                     <input type="submit" class="btn-medusa config_submitter" value="Save Changes"><br>
                                 </fieldset>
                             </div>
