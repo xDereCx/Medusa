@@ -51,6 +51,9 @@ LANG_RE = re.compile(r'((.+?)</td>){5}[^>]+><img alt="(?P<data>\w{2})"', re.IGNO
 SE_LABEL_RE = re.compile(r'S(?P<season>\d{1,2})E(?P<episode>\d{1,3})', re.IGNORECASE)
 S_ONLY_LABEL_RE = re.compile(r'^S(?P<season>\d{1,2})$', re.IGNORECASE)
 
+#: strips the "S01E05"/"S01" suffix off a result title to get the series name on its own
+TITLE_SERIES_RE = re.compile(r'^(?P<series>.+?)\s+S\d{1,2}(?:E\d{1,3})?\b', re.IGNORECASE)
+
 CAPTCHA_MARKER_RE = re.compile(r'\./(captcha/captcha\.php)', re.IGNORECASE | re.DOTALL)
 WAIT_TIME_RE = re.compile(r'CountDown\((\d+)\)', re.IGNORECASE | re.DOTALL)
 DOWNLINK_RE = re.compile(r'<a.+id="downlink" href="([^"]+)"', re.IGNORECASE | re.DOTALL)
@@ -154,6 +157,13 @@ class TitulkyProvider(Provider):
         # drop anything in brackets/parentheses, titulky.com indexes clean titles
         return re.sub(r'(\[|\().+?(\]|\))', '', title).strip()
 
+    def _title_matches(self, expected_title, result_title):
+        """Guard against titulky.com's fulltext search returning unrelated substring
+        matches (e.g. searching "Reacher" also surfaces "Preacher")."""
+        match = TITLE_SERIES_RE.match(result_title)
+        candidate = match.group('series') if match else result_title
+        return sanitize(candidate) == sanitize(expected_title)
+
     def _parse_search_results(self, content):
         results = []
         for match in ROW_RE.finditer(content):
@@ -214,6 +224,8 @@ class TitulkyProvider(Provider):
         if is_episode:
             search_title = self._normalize_title('{} S{:02d}E{:02d}'.format(series, season, episode))
             for result in self._search(search_title):
+                if not self._title_matches(series, result['title']):
+                    continue
                 se_match = SE_LABEL_RE.match(result['season_and_episode'] or '')
                 if not se_match or int(se_match.group('season')) != season or int(se_match.group('episode')) != episode:
                     continue
@@ -226,6 +238,8 @@ class TitulkyProvider(Provider):
             # usually tag with just the season number instead of a specific episode
             pack_search_title = self._normalize_title('{} S{:02d}'.format(series, season))
             for result in self._search(pack_search_title):
+                if not self._title_matches(series, result['title']):
+                    continue
                 s_match = S_ONLY_LABEL_RE.match(result['season_and_episode'] or '')
                 if not s_match or int(s_match.group('season')) != season:
                     continue
@@ -238,6 +252,8 @@ class TitulkyProvider(Provider):
             for result in self._search(search_title):
                 if result['season_and_episode']:
                     # has a season/episode label, so it's a series result, not a movie
+                    continue
+                if not self._title_matches(title, result['title']):
                     continue
                 subtitles.append(TitulkySubtitle(
                     result['language'], False, self.server_url + '/' + result['link_file'] + '.htm',
