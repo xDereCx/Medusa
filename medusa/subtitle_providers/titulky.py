@@ -3,14 +3,19 @@
 from __future__ import unicode_literals
 
 import io
+import json
 import logging
+import os
 import re
 import time
 import zipfile
+from datetime import date
 
 from babelfish import Language
 
 from guessit import guessit
+
+from medusa import app
 
 from requests import Session
 
@@ -102,6 +107,11 @@ class TitulkyProvider(Provider):
     languages = {LANGUAGE_MAP['CZ'], LANGUAGE_MAP['SK']}
     video_types = (Episode, Movie)
     server_url = 'https://www.titulky.com'
+
+    #: titulky.com's VIP account gets 25 fast downloads + 25 from the premium server per day
+    #: before falling back to a captcha; this keeps Medusa's own usage well under that so there's
+    #: still room left for downloads made directly through the Kodi addon on the same account.
+    DAILY_DOWNLOAD_LIMIT = 20
 
     def __init__(self, username=None, password=None):
         if any((username, password)) and not all((username, password)):
@@ -279,7 +289,34 @@ class TitulkyProvider(Provider):
                        candidates[0])
         return candidates[0]
 
+    def _quota_path(self):
+        return os.path.join(app.CACHE_DIR, 'titulky_download_quota.json')
+
+    def _read_quota_count(self):
+        today = date.today().isoformat()
+        try:
+            with open(self._quota_path()) as f:
+                state = json.load(f)
+            if state.get('date') == today:
+                return state.get('count', 0)
+        except (OSError, ValueError):
+            pass
+        return 0
+
+    def _increment_quota_count(self):
+        today = date.today().isoformat()
+        count = self._read_quota_count() + 1
+        with open(self._quota_path(), 'w') as f:
+            json.dump({'date': today, 'count': count}, f)
+        return count
+
     def download_subtitle(self, subtitle):
+        used = self._read_quota_count()
+        if used >= self.DAILY_DOWNLOAD_LIMIT:
+            raise ProviderError('Daily titulky.com download limit ({}) already reached ({} used), '
+                                'skipping to leave quota for manual downloads'.format(
+                                    self.DAILY_DOWNLOAD_LIMIT, used))
+
         content = self._get_download_page(subtitle.sub_id, subtitle.page_link)
 
         if CAPTCHA_MARKER_RE.search(content):
@@ -302,3 +339,5 @@ class TitulkyProvider(Provider):
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             filename = self._pick_episode_file(zf.namelist(), subtitle.episode)
             subtitle.content = fix_line_ending(zf.read(filename))
+
+        self._increment_quota_count()
