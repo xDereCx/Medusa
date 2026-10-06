@@ -551,6 +551,8 @@ class ConfigHandler(BaseRequestHandler):
         'subtitles.providerLogins.legendastv.pass': StringField(app, 'LEGENDASTV_PASS'),
         'subtitles.providerLogins.opensubtitles.user': StringField(app, 'OPENSUBTITLES_USER'),
         'subtitles.providerLogins.opensubtitles.pass': StringField(app, 'OPENSUBTITLES_PASS'),
+        'subtitles.providerLogins.titulky.user': StringField(app, 'TITULKY_USER'),
+        'subtitles.providerLogins.titulky.pass': StringField(app, 'TITULKY_PASS'),
     }
 
     def get(self, identifier, path_param=None):
@@ -1379,6 +1381,7 @@ class DataGenerator(object):
             'providerLogins': {
                 'addic7ed': {'user': app.ADDIC7ED_USER, 'pass': app.ADDIC7ED_PASS},
                 'legendastv': {'user': app.LEGENDASTV_USER, 'pass': app.LEGENDASTV_PASS},
-                'opensubtitles': {'user': app.OPENSUBTITLES_USER, 'pass': app.OPENSUBTITLES_PASS}
+                'opensubtitles': {'user': app.OPENSUBTITLES_USER, 'pass': app.OPENSUBTITLES_PASS},
+                'titulky': {'user': app.TITULKY_USER, 'pass': app.TITULKY_PASS}
             }
         }

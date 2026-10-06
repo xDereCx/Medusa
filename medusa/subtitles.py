@@ -73,6 +73,7 @@ PROVIDER_URLS = {
     'shooter': 'http://www.shooter.cn',
     'subtitulamos': 'https://www.subtitulamos.tv',
     'thesubdb': 'http://www.thesubdb.com',
+    'titulky': 'https://www.titulky.com',
     'tvsubtitles': 'http://www.tvsubtitles.net',
     'wizdom': 'http://wizdom.xyz'
 }
@@ -526,7 +527,9 @@ def get_provider_pool():
                         'opensubtitles': {'username': app.OPENSUBTITLES_USER,
                                           'password': app.OPENSUBTITLES_PASS},
                         'opensubtitlesvip': {'username': app.OPENSUBTITLES_USER,
-                                             'password': app.OPENSUBTITLES_PASS}}
+                                             'password': app.OPENSUBTITLES_PASS},
+                        'titulky': {'username': app.TITULKY_USER,
+                                   'password': app.TITULKY_PASS}}
     return ProviderPool(providers=enabled_service_list(), provider_configs=provider_configs)
 
 

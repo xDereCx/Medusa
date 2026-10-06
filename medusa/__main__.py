@@ -979,6 +979,9 @@ class Application(object):
             app.OPENSUBTITLES_USER = check_setting_str(app.CFG, 'Subtitles', 'opensubtitles_username', '', censor_log='normal')
             app.OPENSUBTITLES_PASS = check_setting_str(app.CFG, 'Subtitles', 'opensubtitles_password', '', censor_log='low')
 
+            app.TITULKY_USER = check_setting_str(app.CFG, 'Subtitles', 'titulky_username', '', censor_log='normal')
+            app.TITULKY_PASS = check_setting_str(app.CFG, 'Subtitles', 'titulky_password', '', censor_log='low')
+
             app.USE_DOWNLOAD_HANDLER = bool(check_setting_int(app.CFG, 'DownloadHandler', 'use_download_handling', 0))
             app.TORRENT_SEED_RATIO = float(check_setting_float(app.CFG, 'DownloadHandler', 'torrent_seed_ratio', 1.0))
             app.TORRENT_SEED_ACTION = check_setting_str(
@@ -2146,6 +2149,9 @@ class Application(object):
 
         new_config['Subtitles']['opensubtitles_username'] = app.OPENSUBTITLES_USER
         new_config['Subtitles']['opensubtitles_password'] = helpers.encrypt(app.OPENSUBTITLES_PASS, app.ENCRYPTION_VERSION)
+
+        new_config['Subtitles']['titulky_username'] = app.TITULKY_USER
+        new_config['Subtitles']['titulky_password'] = helpers.encrypt(app.TITULKY_PASS, app.ENCRYPTION_VERSION)
 
         new_config['DownloadHandler'] = {}
         new_config['DownloadHandler']['use_download_handling'] = int(app.USE_DOWNLOAD_HANDLER)

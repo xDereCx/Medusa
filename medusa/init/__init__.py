@@ -220,6 +220,7 @@ def _configure_subliminal():
     # Register
     for name in ('subtitulamos = {basename}.subtitle_providers.subtitulamos:SubtitulamosProvider'.format(basename=basename),
                  'wizdom = {basename}.subtitle_providers.wizdom:WizdomProvider'.format(basename=basename),
+                 'titulky = {basename}.subtitle_providers.titulky:TitulkyProvider'.format(basename=basename),
                  'addic7ed = subliminal.providers.addic7ed:Addic7edProvider'):
         provider_manager.register(name)
 

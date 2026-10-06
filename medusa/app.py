@@ -637,6 +637,9 @@ class MedusaApp(object):
         self.OPENSUBTITLES_USER = None
         self.OPENSUBTITLES_PASS = None
 
+        self.TITULKY_USER = None
+        self.TITULKY_PASS = None
+
         self._USE_DOWNLOAD_HANDLER = False
 
         self.USE_FAILED_DOWNLOADS = False
