@@ -344,6 +344,28 @@ class TitulkyProvider(Provider):
             os.makedirs(cache_dir)
         return cache_dir
 
+    def _season_attempted_today(self, show_id, season):
+        """Whether we've already tried a cloud fetch for this show/season today.
+
+        Medusa's subtitle finder retries missing subtitles on every scheduled run, which
+        could otherwise re-trigger a full cloud login+add+download cycle many times a day
+        for a season that's already hit the site's daily limit. One attempt per day is enough:
+        a fresh one is made once the day rolls over, and anything that still needs it falls
+        back to the single-episode flow (which has its own daily guard) in the meantime.
+        """
+        path = os.path.join(app.CACHE_DIR, 'titulky_season_cache', show_id, '{}.attempted'.format(season))
+        today = date.today().isoformat()
+        try:
+            with open(path) as f:
+                if f.read().strip() == today:
+                    return True
+        except OSError:
+            pass
+
+        with open(path, 'w') as f:
+            f.write(today)
+        return False
+
     def _get_cached_episode_path(self, show_id, season, episode):
         path = os.path.join(self._season_cache_dir(show_id, season), '{}.srt'.format(episode))
         return path if os.path.isfile(path) else None
@@ -434,7 +456,7 @@ class TitulkyProvider(Provider):
                 show_id = self._find_show_id(subtitle.series, subtitle.link_file)
                 if show_id:
                     cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode)
-                    if not cached_path:
+                    if not cached_path and not self._season_attempted_today(show_id, subtitle.season):
                         self._fetch_season_via_cloud(show_id, subtitle.season)
                         cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode)
                     if cached_path:
