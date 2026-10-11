@@ -62,6 +62,16 @@ DOWNLINK_RE = re.compile(r'<a.+id="downlink" href="([^"]+)"', re.IGNORECASE | re
 EPISODE_IN_FILENAME_RE = re.compile(r'(?:^|[^a-z0-9])e0*(?P<episode>\d{1,3})(?:[^a-z0-9]|$)', re.IGNORECASE)
 SUBTITLE_EXTENSIONS = ('.srt', '.sub', '.ass')
 
+#: titulky.com's "cloud" mirror: lets a premium account fetch many episodes of a show
+#: in a single bulk request instead of one idown.php request per episode.
+PREMIUM_URL = 'https://premium.titulky.com'
+
+#: the show's internal numeric id, found as a link on any of its episodes' detail pages
+SHOW_ID_RE = re.compile(r'TV-Serial-[^"/]+-(?P<show_id>\d+)-S\d+\.htm', re.IGNORECASE)
+
+#: cloud zip entries are named "<title> S01E05 (<tid>).srt"
+TID_FROM_FILENAME_RE = re.compile(r'\((?P<tid>\d+)\)\.\w+$')
+
 
 class TitulkySubtitle(Subtitle):
     """Titulky.com Subtitle."""
@@ -123,7 +133,9 @@ class TitulkyProvider(Provider):
         self.username = username
         self.password = password
         self.logged_in = False
+        self.cloud_logged_in = False
         self.session = None
+        self._show_id_cache = {}
 
     def initialize(self):
         self.session = Session()
@@ -305,6 +317,96 @@ class TitulkyProvider(Provider):
                        candidates[0])
         return candidates[0]
 
+    def _cloud_login(self):
+        if self.cloud_logged_in:
+            return
+        logger.info('Logging in to premium.titulky.com (cloud)')
+        data = {'LoginName': self.username, 'LoginPassword': self.password, 'PermanentLog': '0'}
+        r = self.session.post(PREMIUM_URL + '/', data=data, timeout=10)
+        r.raise_for_status()
+        self.cloud_logged_in = True
+
+    def _find_show_id(self, series, link_file):
+        """Find titulky.com's internal numeric show id by following a known episode's detail page."""
+        if series in self._show_id_cache:
+            return self._show_id_cache[series]
+
+        r = self.session.get('{}/{}.htm'.format(self.server_url, link_file), timeout=10)
+        r.raise_for_status()
+        match = SHOW_ID_RE.search(r.text)
+        show_id = match.group('show_id') if match else None
+        self._show_id_cache[series] = show_id
+        return show_id
+
+    def _season_cache_dir(self, show_id, season):
+        cache_dir = os.path.join(app.CACHE_DIR, 'titulky_season_cache', show_id, str(season))
+        if not os.path.isdir(cache_dir):
+            os.makedirs(cache_dir)
+        return cache_dir
+
+    def _get_cached_episode_path(self, show_id, season, episode):
+        path = os.path.join(self._season_cache_dir(show_id, season), '{}.srt'.format(episode))
+        return path if os.path.isfile(path) else None
+
+    def _cloud_list_season_tids(self, show_id, season):
+        r = self.session.post(PREMIUM_URL + '/', data={
+            'action': 'serial', 'origin': 'titulkydetail', 'step': str(season), 'id': show_id,
+        }, timeout=15)
+        r.raise_for_status()
+        return re.findall(r'name="TID\[\]" value="(\d+)"', r.text)
+
+    def _cloud_add(self, tids):
+        data = [('nextact', 'cloud'), ('oper', 'add')] + [('TID[]', t) for t in tids]
+        r = self.session.post(PREMIUM_URL + '/changecloud.php', data=data, timeout=15)
+        r.raise_for_status()
+
+    def _cloud_remove(self, tid):
+        try:
+            self.session.post(PREMIUM_URL + '/changecloud.php', data={'titulkyId': tid, 'oper': 'del'}, timeout=10)
+        except Exception:
+            logger.warning('Could not remove %s from the titulky.com cloud, leaving it queued', tid)
+
+    def _fetch_season_via_cloud(self, show_id, season):
+        """Bulk-fetch every episode of a season through the premium cloud in one request,
+        caching each episode's subtitle to disk so later per-episode downloads are free.
+        """
+        tids = self._cloud_list_season_tids(show_id, season)
+        if not tids:
+            logger.debug('No cloud entries found for show %s season %s', show_id, season)
+            return
+
+        self._cloud_login()
+        self._cloud_add(tids)
+
+        r = self.session.get(PREMIUM_URL + '/download.php?step=cloud', timeout=30)
+        r.raise_for_status()
+
+        cache_dir = self._season_cache_dir(show_id, season)
+        succeeded_tids = []
+        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+            for name in zf.namelist():
+                if name == '_info.txt':
+                    continue
+                tid_match = TID_FROM_FILENAME_RE.search(name)
+                se_match = SE_LABEL_RE.search(name)
+                if not tid_match or not se_match or tid_match.group('tid') not in tids:
+                    continue
+
+                succeeded_tids.append(tid_match.group('tid'))
+                episode = int(se_match.group('episode'))
+                dest = os.path.join(cache_dir, '{}.srt'.format(episode))
+                if not os.path.exists(dest):
+                    with open(dest, 'wb') as f:
+                        f.write(fix_line_ending(zf.read(name)))
+
+        logger.info('Cloud season fetch for show %s season %s: %d/%d episodes retrieved',
+                    show_id, season, len(succeeded_tids), len(tids))
+
+        # we now have what succeeded cached locally; leave whatever failed (daily limit, etc.)
+        # queued in the cloud in case the same provider instance revisits this season later
+        for tid in succeeded_tids:
+            self._cloud_remove(tid)
+
     def _quota_path(self):
         return os.path.join(app.CACHE_DIR, 'titulky_download_quota.json')
 
@@ -327,6 +429,22 @@ class TitulkyProvider(Provider):
         return count
 
     def download_subtitle(self, subtitle):
+        if subtitle.series and subtitle.season and subtitle.episode:
+            try:
+                show_id = self._find_show_id(subtitle.series, subtitle.link_file)
+                if show_id:
+                    cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode)
+                    if not cached_path:
+                        self._fetch_season_via_cloud(show_id, subtitle.season)
+                        cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode)
+                    if cached_path:
+                        with open(cached_path, 'rb') as f:
+                            subtitle.content = f.read()
+                        return
+            except Exception:
+                logger.warning('Cloud season fetch failed for %s, falling back to single download',
+                               subtitle.series, exc_info=True)
+
         used = self._read_quota_count()
         if used >= self.DAILY_DOWNLOAD_LIMIT:
             raise ProviderError('Daily titulky.com download limit ({}) already reached ({} used), '
