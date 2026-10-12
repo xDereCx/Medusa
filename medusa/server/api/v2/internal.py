@@ -11,7 +11,7 @@ import markdown2
 
 from medusa import app, classes, db, network_timezones, providers
 from medusa.common import (
-    DOWNLOADED, Overview, Quality,
+    ARCHIVED, DOWNLOADED, Overview, Quality,
     SNATCHED, SNATCHED_BEST, SNATCHED_PROPER,
     statusStrings
 )
@@ -614,13 +614,13 @@ class InternalHandler(BaseRequestHandler):
             'tv_episodes.name AS name '
             'FROM tv_episodes, tv_shows '
             'WHERE tv_shows.subtitles = 1 '
-            'AND tv_episodes.status = ? '
+            'AND tv_episodes.status IN (?, ?) '
             'AND tv_episodes.season != 0 '
             "AND tv_episodes.location != '' "
             'AND tv_episodes.showid = tv_shows.indexer_id '
             'AND tv_episodes.indexer = tv_shows.indexer '
             'ORDER BY show_name',
-            [DOWNLOADED]
+            [DOWNLOADED, ARCHIVED]
         )
 
         subtitle_status = {}
