@@ -75,11 +75,15 @@ TID_FROM_FILENAME_RE = re.compile(r'\((?P<tid>\d+)\)\.\w+$')
 #: marks the start of an episode's block of releases on the cloud "serial" listing page
 CLOUD_EPISODE_HEADER_RE = re.compile(r'<h5>(?P<episode>\d+)\.</h5>', re.IGNORECASE)
 
-#: one release row within an episode's block: language flag, upload date, then its TID checkbox
+#: one release row within an episode's block: language flag, release name, upload date, then its TID checkbox
 CLOUD_ROW_RE = re.compile(
-    r'flag-(?P<lang>CZ|SK)-small\.gif.*?col-xs-5">(?P<date>\d{1,2}\.\d{1,2}\.\d{4})<.*?'
+    r'flag-(?P<lang>CZ|SK)-small\.gif.*?<a[^>]*>(?P<release>[^<]+)</a>.*?'
+    r'col-xs-5">(?P<date>\d{1,2}\.\d{1,2}\.\d{4})<.*?'
     r'name="TID\[\]"\s+value="(?P<tid>\d+)"',
     re.IGNORECASE | re.DOTALL)
+
+#: release fields worth matching against the reference release when picking among alternates
+SOURCE_MATCH_FIELDS = ('source', 'streaming_service')
 
 #: reverse of LANGUAGE_MAP, to turn a wanted babelfish Language back into the site's flag code
 FLAG_FOR_LANGUAGE = {language: flag for flag, language in LANGUAGE_MAP.items()}
@@ -383,13 +387,22 @@ class TitulkyProvider(Provider):
         path = os.path.join(self._season_cache_dir(show_id, season), '{}.{}.srt'.format(episode, lang.alpha2))
         return path if os.path.isfile(path) else None
 
-    def _cloud_list_season_tids(self, show_id, season, lang):
+    def _release_fingerprint(self, release_name):
+        if not release_name:
+            return {}
+        guess = guessit(release_name, {'type': 'episode'})
+        return {field: guess[field] for field in SOURCE_MATCH_FIELDS if field in guess}
+
+    def _cloud_list_season_tids(self, show_id, season, lang, reference_release=None):
         """Return {episode: tid} for the given language, one TID per episode.
 
         The listing page shows every uploaded release per episode per language (often several
-        alternate releases of the same episode+language); the most recently uploaded one is kept,
-        since the page gives no quality/popularity signal (unlike the fulltext search results) to
-        score candidates against.
+        alternate releases of the same episode+language, e.g. BluRay vs. different WEB-DL
+        sources). It gives no quality/popularity signal (unlike the fulltext search results), but
+        `reference_release` (the release Medusa already matched for this video) lets candidates
+        whose source/streaming_service agree with it be preferred - the same season is usually
+        sourced consistently across episodes. Ties, or no source match at all, fall back to the
+        most recently uploaded candidate.
         """
         r = self.session.post(PREMIUM_URL + '/', data={
             'action': 'serial', 'origin': 'titulkydetail', 'step': str(season), 'id': show_id,
@@ -397,10 +410,11 @@ class TitulkyProvider(Provider):
         r.raise_for_status()
         content = r.text
 
+        reference_fingerprint = self._release_fingerprint(reference_release)
         wanted_flag = FLAG_FOR_LANGUAGE[lang]
         headers = list(CLOUD_EPISODE_HEADER_RE.finditer(content))
         tid_by_episode = {}
-        best_date_by_episode = {}
+        best_key_by_episode = {}
         for index, header in enumerate(headers):
             episode = int(header.group('episode'))
             if episode in tid_by_episode:
@@ -412,8 +426,12 @@ class TitulkyProvider(Provider):
                     continue
                 day, month, year = (int(part) for part in match.group('date').split('.'))
                 upload_date = (year, month, day)
-                if episode not in best_date_by_episode or upload_date > best_date_by_episode[episode]:
-                    best_date_by_episode[episode] = upload_date
+                candidate_fingerprint = self._release_fingerprint(match.group('release'))
+                source_match_count = sum(1 for field, value in reference_fingerprint.items()
+                                         if candidate_fingerprint.get(field) == value)
+                key = (source_match_count, upload_date)
+                if episode not in best_key_by_episode or key > best_key_by_episode[episode]:
+                    best_key_by_episode[episode] = key
                     tid_by_episode[episode] = match.group('tid')
 
         return tid_by_episode
@@ -429,14 +447,14 @@ class TitulkyProvider(Provider):
         except Exception:
             logger.warning('Could not remove %s from the titulky.com cloud, leaving it queued', tid)
 
-    def _fetch_season_via_cloud(self, show_id, season, lang):
+    def _fetch_season_via_cloud(self, show_id, season, lang, reference_release=None):
         """Bulk-fetch one language of a whole season through the premium cloud in one request,
         caching each episode's subtitle to disk so later per-episode downloads are free.
 
         Only the requested language's TIDs are queued, so a season that only needs e.g. Slovak
         doesn't also burn cloud quota re-fetching Czech episodes nobody asked for.
         """
-        tid_by_episode = self._cloud_list_season_tids(show_id, season, lang)
+        tid_by_episode = self._cloud_list_season_tids(show_id, season, lang, reference_release)
         if not tid_by_episode:
             logger.debug('No cloud entries found for show %s season %s language %s', show_id, season, lang)
             return
@@ -506,7 +524,8 @@ class TitulkyProvider(Provider):
                                                                  subtitle.language)
                     if not cached_path and not self._season_attempted_today(show_id, subtitle.season,
                                                                             subtitle.language):
-                        self._fetch_season_via_cloud(show_id, subtitle.season, subtitle.language)
+                        self._fetch_season_via_cloud(show_id, subtitle.season, subtitle.language,
+                                                     reference_release=subtitle.release)
                         cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode,
                                                                      subtitle.language)
                     if cached_path:
