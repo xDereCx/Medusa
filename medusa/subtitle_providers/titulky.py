@@ -72,6 +72,18 @@ SHOW_ID_RE = re.compile(r'TV-Serial-[^"/]+-(?P<show_id>\d+)-S\d+\.htm', re.IGNOR
 #: cloud zip entries are named "<title> S01E05 (<tid>).srt"
 TID_FROM_FILENAME_RE = re.compile(r'\((?P<tid>\d+)\)\.\w+$')
 
+#: marks the start of an episode's block of releases on the cloud "serial" listing page
+CLOUD_EPISODE_HEADER_RE = re.compile(r'<h5>(?P<episode>\d+)\.</h5>', re.IGNORECASE)
+
+#: one release row within an episode's block: language flag, upload date, then its TID checkbox
+CLOUD_ROW_RE = re.compile(
+    r'flag-(?P<lang>CZ|SK)-small\.gif.*?col-xs-5">(?P<date>\d{1,2}\.\d{1,2}\.\d{4})<.*?'
+    r'name="TID\[\]"\s+value="(?P<tid>\d+)"',
+    re.IGNORECASE | re.DOTALL)
+
+#: reverse of LANGUAGE_MAP, to turn a wanted babelfish Language back into the site's flag code
+FLAG_FOR_LANGUAGE = {language: flag for flag, language in LANGUAGE_MAP.items()}
+
 
 class TitulkySubtitle(Subtitle):
     """Titulky.com Subtitle."""
@@ -344,8 +356,8 @@ class TitulkyProvider(Provider):
             os.makedirs(cache_dir)
         return cache_dir
 
-    def _season_attempted_today(self, show_id, season):
-        """Whether we've already tried a cloud fetch for this show/season today.
+    def _season_attempted_today(self, show_id, season, lang):
+        """Whether we've already tried a cloud fetch for this show/season/language today.
 
         Medusa's subtitle finder retries missing subtitles on every scheduled run, which
         could otherwise re-trigger a full cloud login+add+download cycle many times a day
@@ -353,7 +365,8 @@ class TitulkyProvider(Provider):
         a fresh one is made once the day rolls over, and anything that still needs it falls
         back to the single-episode flow (which has its own daily guard) in the meantime.
         """
-        path = os.path.join(app.CACHE_DIR, 'titulky_season_cache', show_id, '{}.attempted'.format(season))
+        path = os.path.join(app.CACHE_DIR, 'titulky_season_cache', show_id,
+                            '{}.{}.attempted'.format(season, lang.alpha2))
         today = date.today().isoformat()
         try:
             with open(path) as f:
@@ -366,16 +379,44 @@ class TitulkyProvider(Provider):
             f.write(today)
         return False
 
-    def _get_cached_episode_path(self, show_id, season, episode):
-        path = os.path.join(self._season_cache_dir(show_id, season), '{}.srt'.format(episode))
+    def _get_cached_episode_path(self, show_id, season, episode, lang):
+        path = os.path.join(self._season_cache_dir(show_id, season), '{}.{}.srt'.format(episode, lang.alpha2))
         return path if os.path.isfile(path) else None
 
-    def _cloud_list_season_tids(self, show_id, season):
+    def _cloud_list_season_tids(self, show_id, season, lang):
+        """Return {episode: tid} for the given language, one TID per episode.
+
+        The listing page shows every uploaded release per episode per language (often several
+        alternate releases of the same episode+language); the most recently uploaded one is kept,
+        since the page gives no quality/popularity signal (unlike the fulltext search results) to
+        score candidates against.
+        """
         r = self.session.post(PREMIUM_URL + '/', data={
             'action': 'serial', 'origin': 'titulkydetail', 'step': str(season), 'id': show_id,
         }, timeout=15)
         r.raise_for_status()
-        return re.findall(r'name="TID\[\]" value="(\d+)"', r.text)
+        content = r.text
+
+        wanted_flag = FLAG_FOR_LANGUAGE[lang]
+        headers = list(CLOUD_EPISODE_HEADER_RE.finditer(content))
+        tid_by_episode = {}
+        best_date_by_episode = {}
+        for index, header in enumerate(headers):
+            episode = int(header.group('episode'))
+            if episode in tid_by_episode:
+                continue
+            start = header.end()
+            end = headers[index + 1].start() if index + 1 < len(headers) else len(content)
+            for match in CLOUD_ROW_RE.finditer(content[start:end]):
+                if match.group('lang').upper() != wanted_flag:
+                    continue
+                day, month, year = (int(part) for part in match.group('date').split('.'))
+                upload_date = (year, month, day)
+                if episode not in best_date_by_episode or upload_date > best_date_by_episode[episode]:
+                    best_date_by_episode[episode] = upload_date
+                    tid_by_episode[episode] = match.group('tid')
+
+        return tid_by_episode
 
     def _cloud_add(self, tids):
         data = [('nextact', 'cloud'), ('oper', 'add')] + [('TID[]', t) for t in tids]
@@ -388,14 +429,20 @@ class TitulkyProvider(Provider):
         except Exception:
             logger.warning('Could not remove %s from the titulky.com cloud, leaving it queued', tid)
 
-    def _fetch_season_via_cloud(self, show_id, season):
-        """Bulk-fetch every episode of a season through the premium cloud in one request,
+    def _fetch_season_via_cloud(self, show_id, season, lang):
+        """Bulk-fetch one language of a whole season through the premium cloud in one request,
         caching each episode's subtitle to disk so later per-episode downloads are free.
+
+        Only the requested language's TIDs are queued, so a season that only needs e.g. Slovak
+        doesn't also burn cloud quota re-fetching Czech episodes nobody asked for.
         """
-        tids = self._cloud_list_season_tids(show_id, season)
-        if not tids:
-            logger.debug('No cloud entries found for show %s season %s', show_id, season)
+        tid_by_episode = self._cloud_list_season_tids(show_id, season, lang)
+        if not tid_by_episode:
+            logger.debug('No cloud entries found for show %s season %s language %s', show_id, season, lang)
             return
+
+        tid_to_episode = {tid: episode for episode, tid in tid_by_episode.items()}
+        tids = list(tid_to_episode)
 
         self._cloud_login()
         self._cloud_add(tids)
@@ -410,19 +457,19 @@ class TitulkyProvider(Provider):
                 if name == '_info.txt':
                     continue
                 tid_match = TID_FROM_FILENAME_RE.search(name)
-                se_match = SE_LABEL_RE.search(name)
-                if not tid_match or not se_match or tid_match.group('tid') not in tids:
+                if not tid_match or tid_match.group('tid') not in tid_to_episode:
                     continue
 
-                succeeded_tids.append(tid_match.group('tid'))
-                episode = int(se_match.group('episode'))
-                dest = os.path.join(cache_dir, '{}.srt'.format(episode))
+                tid = tid_match.group('tid')
+                succeeded_tids.append(tid)
+                episode = tid_to_episode[tid]
+                dest = os.path.join(cache_dir, '{}.{}.srt'.format(episode, lang.alpha2))
                 if not os.path.exists(dest):
                     with open(dest, 'wb') as f:
                         f.write(fix_line_ending(zf.read(name)))
 
-        logger.info('Cloud season fetch for show %s season %s: %d/%d episodes retrieved',
-                    show_id, season, len(succeeded_tids), len(tids))
+        logger.info('Cloud season fetch for show %s season %s language %s: %d/%d episodes retrieved',
+                    show_id, season, lang, len(succeeded_tids), len(tids))
 
         # we now have what succeeded cached locally; leave whatever failed (daily limit, etc.)
         # queued in the cloud in case the same provider instance revisits this season later
@@ -455,10 +502,13 @@ class TitulkyProvider(Provider):
             try:
                 show_id = self._find_show_id(subtitle.series, subtitle.link_file)
                 if show_id:
-                    cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode)
-                    if not cached_path and not self._season_attempted_today(show_id, subtitle.season):
-                        self._fetch_season_via_cloud(show_id, subtitle.season)
-                        cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode)
+                    cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode,
+                                                                 subtitle.language)
+                    if not cached_path and not self._season_attempted_today(show_id, subtitle.season,
+                                                                            subtitle.language):
+                        self._fetch_season_via_cloud(show_id, subtitle.season, subtitle.language)
+                        cached_path = self._get_cached_episode_path(show_id, subtitle.season, subtitle.episode,
+                                                                     subtitle.language)
                     if cached_path:
                         with open(cached_path, 'rb') as f:
                             subtitle.content = f.read()
