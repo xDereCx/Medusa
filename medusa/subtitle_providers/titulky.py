@@ -19,7 +19,7 @@ from medusa import app
 
 from requests import Session
 
-from subliminal.exceptions import AuthenticationError, ProviderError
+from subliminal.exceptions import AuthenticationError
 from subliminal.matches import guess_matches
 from subliminal.providers import Provider
 from subliminal.subtitle import Subtitle, fix_line_ending
@@ -313,7 +313,7 @@ class TitulkyProvider(Provider):
     def _pick_episode_file(self, namelist, episode):
         candidates = [n for n in namelist if n.lower().endswith(SUBTITLE_EXTENSIONS)]
         if not candidates:
-            raise ProviderError('No subtitle file found in the downloaded archive')
+            return None
 
         if len(candidates) == 1 or episode is None:
             return candidates[0]
@@ -538,14 +538,20 @@ class TitulkyProvider(Provider):
 
         used = self._read_quota_count()
         if used >= self.DAILY_DOWNLOAD_LIMIT:
-            raise ProviderError('Daily titulky.com download limit ({}) already reached ({} used), '
-                                'skipping to leave quota for manual downloads'.format(
-                                    self.DAILY_DOWNLOAD_LIMIT, used))
+            # a plain `return` here, not `raise`: subliminal's ProviderPool treats *any*
+            # exception from download_subtitle() as a reason to discard the provider for
+            # the rest of its (15 minute) cache lifetime - not just skip this one subtitle.
+            # That would take titulky out for every other show being checked in the same
+            # run just because one episode happened to hit the daily cap.
+            logger.warning('Daily titulky.com download limit (%s) already reached (%s used), '
+                           'skipping to leave quota for manual downloads', self.DAILY_DOWNLOAD_LIMIT, used)
+            return
 
         content = self._get_download_page(subtitle.sub_id, subtitle.page_link)
 
         if CAPTCHA_MARKER_RE.search(content):
-            raise ProviderError('titulky.com requires solving a CAPTCHA to download this subtitle')
+            logger.warning('titulky.com requires solving a CAPTCHA to download this subtitle, skipping')
+            return
 
         wait_match = WAIT_TIME_RE.search(content)
         if wait_match:
@@ -555,7 +561,8 @@ class TitulkyProvider(Provider):
 
         link_match = DOWNLINK_RE.search(content)
         if not link_match:
-            raise ProviderError('Could not find the final download link')
+            logger.warning('Could not find the final download link for subtitle %s, skipping', subtitle.sub_id)
+            return
 
         download_url = self.server_url + link_match.group(1)
         r = self.session.get(download_url, headers={'Referer': self.server_url + '/idown.php'}, timeout=10)
@@ -563,6 +570,9 @@ class TitulkyProvider(Provider):
 
         with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
             filename = self._pick_episode_file(zf.namelist(), subtitle.episode)
+            if filename is None:
+                logger.warning('No subtitle file found in the downloaded archive for %s, skipping', subtitle.sub_id)
+                return
             subtitle.content = fix_line_ending(zf.read(filename))
 
         self._increment_quota_count()
