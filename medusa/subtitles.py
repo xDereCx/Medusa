@@ -39,7 +39,7 @@ import knowit
 
 from medusa import app, db, helpers, history, ws
 from medusa.cache import cache, memory_cache
-from medusa.common import DOWNLOADED, SNATCHED, SNATCHED_BEST, SNATCHED_PROPER, cpu_presets
+from medusa.common import ARCHIVED, DOWNLOADED, SNATCHED, SNATCHED_BEST, SNATCHED_PROPER, cpu_presets
 from medusa.helper.common import dateTimeFormat, episode_num, remove_extension, subtitle_extensions
 from medusa.helper.exceptions import ex
 from medusa.helpers import is_media_file, is_rar_file
@@ -1051,7 +1051,7 @@ class SubtitlesFinder(object):
                 'WHERE '
                 's.subtitles = 1 '
                 'AND s.paused = 0 '
-                'AND e.status = ? '
+                'AND e.status IN (?, ?) '
                 'AND e.season > 0 '
                 "AND e.location != '' "
                 'AND age {} 30 '
@@ -1060,7 +1060,7 @@ class SubtitlesFinder(object):
                 'lastsearch ASC '
                 'LIMIT {}'.format
                 (args['age_comparison'], args['limit']),
-                [datetime.datetime.now().toordinal(), DOWNLOADED, sql_like_languages]
+                [datetime.datetime.now().toordinal(), DOWNLOADED, ARCHIVED, sql_like_languages]
             )
 
         if not sql_results:
