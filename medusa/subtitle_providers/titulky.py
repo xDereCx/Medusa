@@ -338,8 +338,13 @@ class TitulkyProvider(Provider):
             return
         logger.info('Logging in to premium.titulky.com (cloud)')
         data = {'LoginName': self.username, 'LoginPassword': self.password, 'PermanentLog': '0'}
-        r = self.session.post(PREMIUM_URL + '/', data=data, timeout=10)
+        r = self.session.post(PREMIUM_URL + '/', data=data,
+                              headers={'Referer': PREMIUM_URL + '/'}, timeout=10)
         r.raise_for_status()
+
+        if self.username not in r.text:
+            raise AuthenticationError('premium.titulky.com cloud login failed, check your username/password')
+
         self.cloud_logged_in = True
 
     def _find_show_id(self, series, link_file):
@@ -436,9 +441,10 @@ class TitulkyProvider(Provider):
 
         return tid_by_episode
 
-    def _cloud_add(self, tids):
+    def _cloud_add(self, tids, referer):
         data = [('nextact', 'cloud'), ('oper', 'add')] + [('TID[]', t) for t in tids]
-        r = self.session.post(PREMIUM_URL + '/changecloud.php', data=data, timeout=15)
+        r = self.session.post(PREMIUM_URL + '/changecloud.php', data=data,
+                              headers={'Referer': referer}, timeout=15)
         r.raise_for_status()
 
     def _cloud_remove(self, tid):
@@ -463,9 +469,11 @@ class TitulkyProvider(Provider):
         tids = list(tid_to_episode)
 
         self._cloud_login()
-        self._cloud_add(tids)
+        season_page = '{}/?action=serial&step={}&id={}'.format(PREMIUM_URL, season, show_id)
+        self._cloud_add(tids, referer=season_page)
 
-        r = self.session.get(PREMIUM_URL + '/download.php?step=cloud', timeout=30)
+        r = self.session.get(PREMIUM_URL + '/download.php?step=cloud',
+                             headers={'Referer': PREMIUM_URL + '/?action=cloud'}, timeout=30)
         r.raise_for_status()
 
         cache_dir = self._season_cache_dir(show_id, season)
