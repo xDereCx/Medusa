@@ -341,6 +341,8 @@ class TitulkyProvider(Provider):
         r = self.session.post(PREMIUM_URL + '/', data=data,
                               headers={'Referer': PREMIUM_URL + '/'}, timeout=10)
         r.raise_for_status()
+        logger.debug('Cloud login response: status=%s cookies=%s body(first 500)=%r',
+                     r.status_code, self.session.cookies.get_dict(), r.text[:500])
 
         if self.username not in r.text:
             raise AuthenticationError('premium.titulky.com cloud login failed, check your username/password')
@@ -446,6 +448,7 @@ class TitulkyProvider(Provider):
         r = self.session.post(PREMIUM_URL + '/changecloud.php', data=data,
                               headers={'Referer': referer}, timeout=15)
         r.raise_for_status()
+        return r.text
 
     def _cloud_remove(self, tid):
         try:
@@ -470,20 +473,33 @@ class TitulkyProvider(Provider):
 
         self._cloud_login()
         season_page = '{}/?action=serial&step={}&id={}'.format(PREMIUM_URL, season, show_id)
-        self._cloud_add(tids, referer=season_page)
+        add_response = self._cloud_add(tids, referer=season_page)
+        logger.debug('Cloud add response (%d bytes): %s', len(add_response), add_response[:500])
 
         r = self.session.get(PREMIUM_URL + '/download.php?step=cloud',
                              headers={'Referer': PREMIUM_URL + '/?action=cloud'}, timeout=30)
         r.raise_for_status()
+        logger.debug('Cloud download response: status=%s content-type=%s length=%d',
+                     r.status_code, r.headers.get('Content-Type'), len(r.content))
 
         cache_dir = self._season_cache_dir(show_id, season)
         succeeded_tids = []
-        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
-            for name in zf.namelist():
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(r.content))
+        except zipfile.BadZipFile:
+            logger.warning('Cloud download for show %s season %s language %s was not a zip file, '
+                           'first 500 bytes: %r', show_id, season, lang, r.content[:500])
+            return
+        with zf:
+            names = zf.namelist()
+            logger.debug('Cloud zip for show %s season %s language %s contains: %s',
+                         show_id, season, lang, names)
+            for name in names:
                 if name == '_info.txt':
                     continue
                 tid_match = TID_FROM_FILENAME_RE.search(name)
                 if not tid_match or tid_match.group('tid') not in tid_to_episode:
+                    logger.debug('Cloud zip entry %r did not match any requested tid %s', name, tids)
                     continue
 
                 tid = tid_match.group('tid')
