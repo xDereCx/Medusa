@@ -51,7 +51,7 @@ class MedusaApp(object):
         self.RECOMMENDED_DB = 'recommended.db'
         self.LOG_FILENAME = 'application.log'
         self.CONFIG_INI = 'config.ini'
-        self.GIT_ORG = 'pymedusa'
+        self.GIT_ORG = 'xDereCx'
         self.GIT_REPO = 'Medusa'
         self.BASE_MEDUSA_URL = 'https://raw.githubusercontent.com/pymedusa/Medusa/refs/heads/master'
         self.BASE_PYMEDUSA_URL = 'https://raw.githubusercontent.com/pymedusa/medusa.github.io/refs/heads/master'
